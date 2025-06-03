@@ -7,7 +7,6 @@ VMManager 6 Auto-Balancer Script
 import os
 import sys
 import time
-import json
 import logging
 import requests
 import argparse

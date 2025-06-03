@@ -4,20 +4,16 @@ VMManager 6 Auto-Balancer Interactive Mode
 Интерактивный режим для управления балансировщиком ВМ
 """
 
-import os
 import sys
 import time
 import threading
+import logging
 from typing import Optional, List
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.layout import Layout
-from rich.live import Live
-from rich.text import Text
 from rich.prompt import Prompt, Confirm
-from rich.progress import Progress, TaskID
 from rich import box
 from rich.align import Align
 from dotenv import load_dotenv
@@ -519,7 +515,7 @@ Status: {status} | Balance: {balance_status} | Time: {datetime.now().strftime('%
                     self.clusters = self.api.get_clusters()
                 except Exception as e:
                     # Log error but continue running
-                    pass
+                    logging.error(f"Balance cycle error: {e}")
                 
                 # Wait for interval, but check balance_running flag every second
                 for _ in range(self.settings['balance_interval']):
@@ -528,6 +524,7 @@ Status: {status} | Balance: {balance_status} | Time: {datetime.now().strftime('%
                     time.sleep(1)
                     
         except Exception as e:
+            logging.error(f"Continuous balance worker failed: {e}")
             self.balance_running = False
     
     def view_logs(self) -> None:
