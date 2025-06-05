@@ -173,14 +173,43 @@ A node is considered overloaded when:
 - **AND** Node is not in maintenance mode
 - **AND** Node is not excluded from migrations
 
-### 🎯 Target Selection
-A node can accept VMs when:
-- CPU allocation ratio < threshold (default: 6:1 vCPU:pCPU)
-- **AND** Memory usage < threshold (default: 80%)
-- **AND** Not in maintenance mode
-- **AND** VM creation is allowed
-- **AND** Under VM limit (if set)
-- **AND** Not excluded as target
+### 🎯 Target Selection Logic
+
+The target node selection process follows a sophisticated multi-stage algorithm:
+
+#### Stage 1: Initial Candidate Filtering
+A node qualifies as a potential target when:
+- **Node State**: Not in maintenance mode
+- **VM Creation**: VM creation is allowed on the node
+- **VM Limits**: Under configured VM limit (if set)
+- **Exclusions**: Not in the excluded target nodes list
+- **CPU Capacity**: CPU load score < target threshold (default: 6.0)
+- **Memory Capacity**: Memory usage < target threshold (default: 80%)
+
+#### Stage 2: VM-Specific Compatibility Check
+For each VM migration, the system verifies:
+- **Resource Estimation**: VM resources won't cause node overload after migration
+  - Estimated CPU ratio: `(current_cpu + vm_cpu) / total_cpu < overload_threshold`
+  - Estimated memory usage: `current_memory% + (vm_memory/total_memory)*100 < overload_threshold`
+- **QEMU Compatibility**: Target node QEMU version ≥ source node QEMU version
+- **Live Capacity**: Real-time resource availability
+
+#### Stage 3: Selection Priority
+From compatible nodes, selection prioritizes:
+1. **Lowest CPU load score** (combination of allocation ratio + VM density)
+2. **Lowest memory usage percentage**
+3. **First available node** meeting all criteria
+
+#### CPU Load Score Calculation
+The system uses an advanced CPU scoring algorithm:
+```
+cpu_load_score = allocation_ratio + (vm_density_factor * 0.5)
+```
+Where:
+- `allocation_ratio` = allocated_vCPUs / physical_CPUs
+- `vm_density_factor` = min(vm_count / physical_CPUs, 2.0)
+
+This considers both resource allocation and management complexity.
 
 ### 🔄 VM Selection Strategy
 Migration candidates must be:
@@ -232,6 +261,26 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+## 📦 Releases
+
+### Latest Release
+Download the latest version from [GitHub Releases](https://github.com/your-username/vm_balancer/releases/latest)
+
+### Available Packages
+- **Source Code**: Complete source with all files
+- **Portable Package**: Ready-to-run for Linux/Mac/Windows  
+- **Windows Package**: Optimized for Windows with setup scripts
+
+### Quick Install from Release
+```bash
+# Linux/Mac
+wget https://github.com/DenisKoleda/vm_balancer/releases/latest/download/vm-balancer-X.X.X-portable.tar.gz
+tar -xzf vm-balancer-X.X.X-portable.tar.gz
+cd vm-balancer-portable && ./run.sh
+
+# Windows: Download vm-balancer-X.X.X-windows.zip and run install.bat
+```
+
 ## 🔗 Related Projects
 
 - [VMManager 6 Documentation](https://docs.vmmanager.com/)
@@ -246,6 +295,7 @@ This tool performs live VM migrations. Always test in a development environment 
 - 🐛 **Bug Reports**: [GitHub Issues](https://github.com/your-username/vm_balancer/issues)
 - 💡 **Feature Requests**: [GitHub Discussions](https://github.com/your-username/vm_balancer/discussions)
 - 📖 **Documentation**: [Wiki](https://github.com/your-username/vm_balancer/wiki)
+- 📋 **Release Guide**: [RELEASE.md](RELEASE.md)
 
 ---
 
