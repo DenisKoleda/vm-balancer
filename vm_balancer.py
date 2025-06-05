@@ -485,8 +485,30 @@ class VMManagerAPI:
             # Get job ID to track migration progress
             job_data = response.json()
             
-            # Enhanced debugging to understand response structure
-            logging.debug(f"Full migration response structure: {json.dumps(job_data, indent=2)}")
+            # Enhanced debugging to understand response structure - log at INFO level for easier analysis
+            logging.info(f"=== MIGRATION RESPONSE ANALYSIS ===")
+            logging.info(f"Full migration response: {json.dumps(job_data, indent=2)}")
+            
+            # Try to find all possible ID fields in the response
+            all_found_ids = {}
+            
+            def extract_all_ids(data, prefix=""):
+                """Recursively extract all ID-like fields from response"""
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        current_path = f"{prefix}.{key}" if prefix else key
+                        if any(id_term in key.lower() for id_term in ['id', 'task', 'job']):
+                            if isinstance(value, (int, str)) and str(value).isdigit():
+                                all_found_ids[current_path] = value
+                                logging.info(f"Found ID field: {current_path} = {value}")
+                        
+                        if isinstance(value, (dict, list)):
+                            extract_all_ids(value, current_path)
+                elif isinstance(data, list):
+                    for i, item in enumerate(data):
+                        extract_all_ids(item, f"{prefix}[{i}]")
+            
+            extract_all_ids(job_data)
             
             # Try multiple possible fields for job ID, prioritizing task-specific fields
             job_id = None
@@ -494,10 +516,11 @@ class VMManagerAPI:
             # that the generic 'id' might not be the actual task ID visible in VMManager
             possible_job_fields = ['task_id', 'job_id', 'taskId', 'jobId', 'task', 'job', 'id']
             
+            # First check top level
             for field in possible_job_fields:
                 if field in job_data:
                     job_id = job_data.get(field)
-                    logging.debug(f"Found potential job ID in field '{field}': {job_id}")
+                    logging.info(f"Selected job ID from top-level field '{field}': {job_id}")
                     break
             
             # Also check if there's a nested structure
@@ -506,7 +529,7 @@ class VMManagerAPI:
                 for field in possible_job_fields:
                     if field in data_section:
                         job_id = data_section.get(field)
-                        logging.debug(f"Found potential job ID in data.{field}: {job_id}")
+                        logging.info(f"Selected job ID from data.{field}: {job_id}")
                         break
                 
                 # Check deeper nesting (e.g., data.migration.task_id)
@@ -516,7 +539,7 @@ class VMManagerAPI:
                             for field in possible_job_fields:
                                 if field in value:
                                     job_id = value.get(field)
-                                    logging.debug(f"Found potential job ID in data.{key}.{field}: {job_id}")
+                                    logging.info(f"Selected job ID from data.{key}.{field}: {job_id}")
                                     break
                             if job_id:
                                 break
@@ -527,11 +550,23 @@ class VMManagerAPI:
                 for field in possible_job_fields:
                     if field in result_section:
                         job_id = result_section.get(field)
-                        logging.debug(f"Found potential job ID in result.{field}: {job_id}")
+                        logging.info(f"Selected job ID from result.{field}: {job_id}")
                         break
             
+            # Summary of findings
+            logging.info(f"=== ID EXTRACTION SUMMARY ===")
+            logging.info(f"All found ID-like fields: {all_found_ids}")
+            logging.info(f"Selected job ID for tracking: {job_id}")
+            
+            # If we found a job ID, also try to find what other recent tasks exist
+            # This might help identify if our selected ID is correct
             if job_id:
-                logging.info(f"Using job ID {job_id} for migration tracking")
+                logging.info(f"Checking for other recent tasks to validate job ID {job_id}...")
+                self._check_recent_tasks_immediately(job_id)
+                
+            logging.info(f"================================")
+            
+            if job_id:
                 return self.wait_for_job_completion(job_id, timeout)
             else:
                 logging.warning(f"No job ID found in migration response. Available fields: {list(job_data.keys())}")
@@ -646,6 +681,8 @@ class VMManagerAPI:
     def _debug_recent_tasks(self, searched_job_id: str) -> None:
         """Debug helper to find recent tasks and understand ID patterns"""
         try:
+            logging.info(f"=== TASK DEBUG: Searching for task ID {searched_job_id} ===")
+            
             # Try different endpoints that might list recent tasks
             task_list_urls = [
                 f"{self.host}/vm/v3/task",
@@ -654,34 +691,58 @@ class VMManagerAPI:
                 f"{self.host}/vm/v3/jobs",
                 f"{self.host}/api/v3/jobs",
                 f"{self.host}/jobs",
+                f"{self.host}/vm/v3/tasks",  # Plural version
+                f"{self.host}/api/v3/tasks",
+                f"{self.host}/tasks",
             ]
             
             for url in task_list_urls:
                 try:
-                    logging.debug(f"Checking task list at {url}")
+                    logging.info(f"Checking task list at {url}")
                     response = self.session.get(url)
                     
                     if response.status_code == 200:
                         tasks_data = response.json()
-                        logging.debug(f"Found task list at {url}")
+                        logging.info(f"✓ Found working task list endpoint: {url}")
                         
                         if isinstance(tasks_data, list):
-                            logging.debug(f"Task list contains {len(tasks_data)} items")
+                            logging.info(f"Task list contains {len(tasks_data)} items")
                             
                             # Look for recent tasks and log their structure
-                            for i, task in enumerate(tasks_data[:5]):  # Only check first 5
-                                logging.debug(f"Recent task {i+1}: {json.dumps(task, indent=2)}")
-                                
-                                # Check if any task has an ID that might be related
+                            recent_tasks = tasks_data[:10] if len(tasks_data) >= 10 else tasks_data
+                            logging.info(f"Analyzing {len(recent_tasks)} most recent tasks:")
+                            
+                            for i, task in enumerate(recent_tasks):
                                 if isinstance(task, dict):
-                                    task_id = task.get('id')
-                                    if task_id and str(task_id) == str(searched_job_id):
-                                        logging.info(f"Found matching task with ID {task_id}: {task}")
+                                    # Extract all ID-like fields from each task
+                                    task_ids = {}
+                                    for key, value in task.items():
+                                        if any(id_term in key.lower() for id_term in ['id', 'task', 'job']) and isinstance(value, (int, str)):
+                                            task_ids[key] = value
+                                    
+                                    logging.info(f"Task {i+1}: IDs found: {task_ids}")
+                                    
+                                    # Check if any ID matches what we're looking for
+                                    for field, task_id in task_ids.items():
+                                        if str(task_id) == str(searched_job_id):
+                                            logging.info(f"🎯 MATCH FOUND! Task with {field}={task_id}")
+                                            logging.info(f"Full matching task: {json.dumps(task, indent=2)}")
+                                            
+                                    # Also log the first few tasks completely for pattern analysis
+                                    if i < 3:
+                                        logging.info(f"Complete task {i+1} structure: {json.dumps(task, indent=2)}")
                                         
                         elif isinstance(tasks_data, dict):
-                            logging.debug(f"Task list response structure: {json.dumps(tasks_data, indent=2)}")
+                            logging.info(f"Task list response is a dict: {json.dumps(tasks_data, indent=2)}")
+                            
+                            # Check if there's a data or results field with task list
+                            for key in ['data', 'result', 'tasks', 'jobs']:
+                                if key in tasks_data and isinstance(tasks_data[key], list):
+                                    logging.info(f"Found task list in {key} field")
+                                    self._analyze_task_list(tasks_data[key], searched_job_id)
                             
                         # Stop after finding first working endpoint
+                        logging.info(f"=== END TASK DEBUG ===")
                         break
                         
                 except Exception as e:
@@ -690,6 +751,80 @@ class VMManagerAPI:
                     
         except Exception as e:
             logging.debug(f"Error in task debug: {e}")
+    
+    def _analyze_task_list(self, task_list: list, searched_job_id: str) -> None:
+        """Analyze a list of tasks for patterns"""
+        logging.info(f"Analyzing {len(task_list)} tasks from nested structure")
+        
+        for i, task in enumerate(task_list[:5]):  # Only check first 5
+            if isinstance(task, dict):
+                # Extract all ID-like fields
+                task_ids = {}
+                for key, value in task.items():
+                    if any(id_term in key.lower() for id_term in ['id', 'task', 'job']) and isinstance(value, (int, str)):
+                        task_ids[key] = value
+                
+                logging.info(f"Nested task {i+1}: IDs found: {task_ids}")
+                
+                # Check for matches
+                for field, task_id in task_ids.items():
+                    if str(task_id) == str(searched_job_id):
+                        logging.info(f"🎯 MATCH FOUND in nested structure! Task with {field}={task_id}")
+                        logging.info(f"Full matching nested task: {json.dumps(task, indent=2)}")
+
+    def _check_recent_tasks_immediately(self, selected_job_id: str) -> None:
+        """Check recent tasks immediately after migration to validate the selected job ID"""
+        try:
+            logging.info(f"🔍 Immediate task validation for job ID {selected_job_id}")
+            
+            # Try the main task list endpoints to see most recent tasks
+            task_list_urls = [
+                f"{self.host}/vm/v3/task",
+                f"{self.host}/api/v3/task", 
+                f"{self.host}/task",
+            ]
+            
+            for url in task_list_urls:
+                try:
+                    response = self.session.get(url)
+                    if response.status_code == 200:
+                        tasks_data = response.json()
+                        
+                        # Look at the most recent tasks (first 5)
+                        recent_tasks = []
+                        if isinstance(tasks_data, list):
+                            recent_tasks = tasks_data[:5]
+                        elif isinstance(tasks_data, dict) and 'data' in tasks_data:
+                            if isinstance(tasks_data['data'], list):
+                                recent_tasks = tasks_data['data'][:5]
+                        
+                        if recent_tasks:
+                            logging.info(f"📋 Most recent tasks from {url}:")
+                            for i, task in enumerate(recent_tasks):
+                                if isinstance(task, dict):
+                                    task_ids = {}
+                                    for key, value in task.items():
+                                        if any(id_term in key.lower() for id_term in ['id', 'task', 'job']) and isinstance(value, (int, str)):
+                                            task_ids[key] = value
+                                    
+                                    # Highlight if this matches our selected ID
+                                    match_marker = " ⭐ THIS IS OUR SELECTED ID" if str(task_ids.get('id', '')) == str(selected_job_id) else ""
+                                    logging.info(f"  Task {i+1}: {task_ids}{match_marker}")
+                                    
+                                    # Also check for migration-related indicators
+                                    task_type = task.get('type', task.get('operation', task.get('action', 'unknown')))
+                                    if 'migrate' in str(task_type).lower():
+                                        logging.info(f"    ↳ This appears to be a migration task (type: {task_type})")
+                        
+                        # Stop after first working endpoint
+                        break
+                        
+                except Exception as e:
+                    logging.debug(f"Failed to check recent tasks at {url}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logging.debug(f"Error checking immediate tasks: {e}")
 
     @staticmethod
     def compare_qemu_versions(source_version: str, target_version: str) -> bool:
