@@ -484,10 +484,57 @@ class VMManagerAPI:
             
             # Get job ID to track migration progress
             job_data = response.json()
-            job_id = job_data.get('id')
+            
+            # Enhanced debugging to understand response structure
+            logging.debug(f"Full migration response structure: {json.dumps(job_data, indent=2)}")
+            
+            # Try multiple possible fields for job ID, prioritizing task-specific fields
+            job_id = None
+            # Prioritize task_id, job_id over generic 'id' since the user's issue suggests
+            # that the generic 'id' might not be the actual task ID visible in VMManager
+            possible_job_fields = ['task_id', 'job_id', 'taskId', 'jobId', 'task', 'job', 'id']
+            
+            for field in possible_job_fields:
+                if field in job_data:
+                    job_id = job_data.get(field)
+                    logging.debug(f"Found potential job ID in field '{field}': {job_id}")
+                    break
+            
+            # Also check if there's a nested structure
+            if not job_id and 'data' in job_data:
+                data_section = job_data['data']
+                for field in possible_job_fields:
+                    if field in data_section:
+                        job_id = data_section.get(field)
+                        logging.debug(f"Found potential job ID in data.{field}: {job_id}")
+                        break
+                
+                # Check deeper nesting (e.g., data.migration.task_id)
+                if not job_id and isinstance(data_section, dict):
+                    for key, value in data_section.items():
+                        if isinstance(value, dict):
+                            for field in possible_job_fields:
+                                if field in value:
+                                    job_id = value.get(field)
+                                    logging.debug(f"Found potential job ID in data.{key}.{field}: {job_id}")
+                                    break
+                            if job_id:
+                                break
+            
+            # Check if there's a 'result' section
+            if not job_id and 'result' in job_data:
+                result_section = job_data['result']
+                for field in possible_job_fields:
+                    if field in result_section:
+                        job_id = result_section.get(field)
+                        logging.debug(f"Found potential job ID in result.{field}: {job_id}")
+                        break
             
             if job_id:
+                logging.info(f"Using job ID {job_id} for migration tracking")
                 return self.wait_for_job_completion(job_id, timeout)
+            else:
+                logging.warning(f"No job ID found in migration response. Available fields: {list(job_data.keys())}")
             
             return True
             
@@ -515,20 +562,36 @@ class VMManagerAPI:
             for url in possible_urls:
                 try:
                     response = self.session.get(url)
+                    logging.debug(f"Testing task URL {url}: status {response.status_code}")
+                    
                     if response.status_code == 200:
                         working_url = url
                         logging.debug(f"Using task status URL: {url}")
+                        
+                        # Log the structure of the task data we found
+                        try:
+                            task_data = response.json()
+                            logging.debug(f"Task data structure for job {job_id}: {json.dumps(task_data, indent=2)}")
+                        except:
+                            logging.debug(f"Task response text: {response.text}")
                         break
                     elif response.status_code == 404:
+                        logging.debug(f"Task URL {url} returned 404, trying next")
                         continue  # Try next URL
                     else:
                         response.raise_for_status()
-                except requests.RequestException:
+                except requests.RequestException as e:
+                    logging.debug(f"Task URL {url} failed with error: {e}")
                     continue  # Try next URL
             
             if not working_url:
-                logging.warning(f"Could not find working task status endpoint for job {job_id}. "
-                               f"Assuming migration completed (VMManager Basic may not support task tracking)")
+                logging.warning(f"Could not find working task status endpoint for job {job_id}.")
+                
+                # Try to find recent tasks to understand ID pattern
+                logging.debug("Attempting to discover recent tasks to understand job ID pattern...")
+                self._debug_recent_tasks(job_id)
+                
+                logging.warning("Assuming migration completed (VMManager Basic may not support task tracking)")
                 return True
             
             while time.time() - start_time < timeout:
@@ -579,6 +642,54 @@ class VMManagerAPI:
         except Exception as e:
             logging.error(f"Error waiting for job {job_id}: {e}")
             return False
+
+    def _debug_recent_tasks(self, searched_job_id: str) -> None:
+        """Debug helper to find recent tasks and understand ID patterns"""
+        try:
+            # Try different endpoints that might list recent tasks
+            task_list_urls = [
+                f"{self.host}/vm/v3/task",
+                f"{self.host}/api/v3/task", 
+                f"{self.host}/task",
+                f"{self.host}/vm/v3/jobs",
+                f"{self.host}/api/v3/jobs",
+                f"{self.host}/jobs",
+            ]
+            
+            for url in task_list_urls:
+                try:
+                    logging.debug(f"Checking task list at {url}")
+                    response = self.session.get(url)
+                    
+                    if response.status_code == 200:
+                        tasks_data = response.json()
+                        logging.debug(f"Found task list at {url}")
+                        
+                        if isinstance(tasks_data, list):
+                            logging.debug(f"Task list contains {len(tasks_data)} items")
+                            
+                            # Look for recent tasks and log their structure
+                            for i, task in enumerate(tasks_data[:5]):  # Only check first 5
+                                logging.debug(f"Recent task {i+1}: {json.dumps(task, indent=2)}")
+                                
+                                # Check if any task has an ID that might be related
+                                if isinstance(task, dict):
+                                    task_id = task.get('id')
+                                    if task_id and str(task_id) == str(searched_job_id):
+                                        logging.info(f"Found matching task with ID {task_id}: {task}")
+                                        
+                        elif isinstance(tasks_data, dict):
+                            logging.debug(f"Task list response structure: {json.dumps(tasks_data, indent=2)}")
+                            
+                        # Stop after finding first working endpoint
+                        break
+                        
+                except Exception as e:
+                    logging.debug(f"Task list URL {url} failed: {e}")
+                    continue
+                    
+        except Exception as e:
+            logging.debug(f"Error in task debug: {e}")
 
     @staticmethod
     def compare_qemu_versions(source_version: str, target_version: str) -> bool:
