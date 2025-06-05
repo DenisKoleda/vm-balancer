@@ -23,6 +23,85 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Load environment variables
 load_dotenv()
 
+class TelegramNotifier:
+    """Telegram notification support for migration events"""
+    
+    def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None, enabled: bool = False):
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self.enabled = enabled and bool(bot_token) and bool(chat_id)
+        
+        if enabled and not (bot_token and chat_id):
+            logging.warning("Telegram notifications requested but bot_token or chat_id not provided. Notifications disabled.")
+        elif self.enabled:
+            logging.info("Telegram notifications enabled")
+    
+    def send_message(self, message: str) -> bool:
+        """Send message to Telegram"""
+        if not self.enabled:
+            return True
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            data = {
+                'chat_id': self.chat_id,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            
+            response = requests.post(url, data=data, timeout=10)
+            response.raise_for_status()
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to send Telegram notification: {e}")
+            return False
+    
+    def notify_migration_start(self, vm_name: str, source_node: str, target_node: str) -> None:
+        """Notify about migration start"""
+        message = f"🔄 <b>VM Migration Started</b>\n\n" \
+                 f"VM: <code>{vm_name}</code>\n" \
+                 f"From: <code>{source_node}</code>\n" \
+                 f"To: <code>{target_node}</code>\n" \
+                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.send_message(message)
+    
+    def notify_migration_success(self, vm_name: str, source_node: str, target_node: str, duration: float) -> None:
+        """Notify about successful migration"""
+        message = f"✅ <b>VM Migration Completed</b>\n\n" \
+                 f"VM: <code>{vm_name}</code>\n" \
+                 f"From: <code>{source_node}</code>\n" \
+                 f"To: <code>{target_node}</code>\n" \
+                 f"Duration: {duration:.1f} seconds\n" \
+                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.send_message(message)
+    
+    def notify_migration_failure(self, vm_name: str, source_node: str, target_node: str, error: str) -> None:
+        """Notify about failed migration"""
+        message = f"❌ <b>VM Migration Failed</b>\n\n" \
+                 f"VM: <code>{vm_name}</code>\n" \
+                 f"From: <code>{source_node}</code>\n" \
+                 f"To: <code>{target_node}</code>\n" \
+                 f"Error: <code>{error}</code>\n" \
+                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.send_message(message)
+    
+    def notify_balance_cycle_start(self, cluster_count: int, dry_run: bool = False) -> None:
+        """Notify about balance cycle start"""
+        mode = "🧪 DRY RUN" if dry_run else "🔄 LIVE"
+        message = f"{mode} <b>Balance Cycle Started</b>\n\n" \
+                 f"Clusters: {cluster_count}\n" \
+                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.send_message(message)
+    
+    def notify_balance_cycle_complete(self, total_migrations: int, dry_run: bool = False) -> None:
+        """Notify about balance cycle completion"""
+        mode = "🧪 DRY RUN" if dry_run else "✅ COMPLETED"
+        message = f"{mode} <b>Balance Cycle Finished</b>\n\n" \
+                 f"Migrations performed: {total_migrations}\n" \
+                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.send_message(message)
+
 def get_env_value(key: str, default: str = '') -> str:
     """Get environment variable value, removing comments"""
     value = os.getenv(key, default)
@@ -92,6 +171,23 @@ class NodeInfo:
     def cpu_allocation_ratio(self) -> float:
         """Calculate vCPU to physical CPU allocation ratio"""
         return (self.cpu_used / self.cpu_total) if self.cpu_total > 0 else 0.0
+    
+    @property
+    def cpu_load_score(self) -> float:
+        """Calculate a more sophisticated CPU load score combining allocation ratio and VM density"""
+        if self.cpu_total <= 0:
+            return 0.0
+        
+        # Base allocation ratio
+        allocation_ratio = self.cpu_allocation_ratio
+        
+        # VM density factor (more VMs = higher complexity/overhead)
+        vm_density_factor = min(self.vm_count / max(self.cpu_total, 1), 2.0)  # Cap at 2.0x factor
+        
+        # Combined score: allocation ratio + density penalty
+        load_score = allocation_ratio + (vm_density_factor * 0.5)
+        
+        return load_score
     
     @property
     def memory_usage_percent(self) -> float:
@@ -387,17 +483,59 @@ class VMManagerAPI:
             response.raise_for_status()
             
             # Get job ID to track migration progress
-            job_data = response.json()
-            job_id = job_data.get('id')
-            
-            if job_id:
+            vm_id = str(response.json()['id'])
+            if job_id := self.get_job_id(vm_id):
                 return self.wait_for_job_completion(job_id, timeout)
-            
-            return True
+            else:
+                logging.warning(f"No host_migrate task found for VM {vm_id}")
+                return False
             
         except Exception as e:
             logging.error(f"Failed to migrate VM {vm_id}: {e}")
             return False
+        
+    def get_job_id(self, vm_id: str) -> str:
+        """Get job ID for specific VM"""
+        try:
+            url = f"{self.host}/vm/v3/host/{vm_id}/history"
+            response = self.session.get(url)
+            response.raise_for_status()
+            history_data = response.json()
+            max_id = history_data['max_id']
+            
+            # Check if history contains tasks
+            if 'list' in history_data and history_data['list']:
+                tasks = history_data['list']
+                
+                # First check if max_id task is a running host_migrate
+                max_id_task = next((task for task in tasks if task.get('id') == max_id), None)
+                if (max_id_task and 
+                    max_id_task.get('name') == 'host_migrate' and 
+                    max_id_task.get('state') == 'running'):
+                    task_id = str(max_id_task['task'])
+                    logging.debug(f"Found running host_migrate task (max_id) {task_id} for VM {vm_id}")
+                    return task_id
+                
+                # Find the most recent running host_migrate task
+                migrate_tasks = [task for task in tasks 
+                               if task.get('name') == 'host_migrate' and task.get('state') == 'running']
+                
+                if migrate_tasks:
+                    # Get the most recent one (assuming they are ordered by date_create)
+                    latest_task = max(migrate_tasks, key=lambda x: x.get('date_create', ''))
+                    task_id = str(latest_task['task'])
+                    logging.debug(f"Found running host_migrate task ID {task_id} for VM {vm_id}")
+                    return task_id
+                else:
+                    logging.warning(f"No running host_migrate tasks found for VM {vm_id}")
+                    return None
+            else:
+                logging.warning(f"No task history found for VM {vm_id}")
+                return None
+            
+        except Exception as e:
+            logging.error(f"Failed to get job ID for VM {vm_id}: {e}")
+            return None
     
     def wait_for_job_completion(self, job_id: str, timeout: int = 3600) -> bool:
         """Wait for job completion with timeout"""
@@ -413,36 +551,23 @@ class VMManagerAPI:
                 response.raise_for_status()
                 
                 job_data = response.json()
-                status = job_data.get('status', '').lower()
+                status = job_data.get('task', {}).get('status', '').lower()
                 
-                if status == 'success':
+                if status == 'complete':
                     elapsed = time.time() - start_time
                     logging.info(f"Migration job {job_id} completed successfully in {elapsed:.1f} seconds")
                     return True
-                elif status == 'error':
-                    error_msg = job_data.get('error_message', 'Unknown error')
-                    logging.error(f"Job {job_id} failed: {error_msg}")
+                elif status == 'failed':
+                    error_msg = job_data.get('task', {}).get('output', 'Unknown error')
+                    logging.error(f"Job {job_id} failed: \n{error_msg}")
                     return False
                 
                 # Log progress every 60 seconds for long-running migrations
                 elapsed = time.time() - start_time
                 if elapsed - last_progress_log >= 60:
-                    progress_msg = job_data.get('progress', 'unknown')
-                    status_info = status if status else 'running'
-                    
-                    # Try to get additional useful information from job data
-                    extra_info = []
-                    if 'progress_percent' in job_data:
-                        extra_info.append(f"percent: {job_data['progress_percent']}%")
-                    if 'remaining_time' in job_data:
-                        extra_info.append(f"remaining: {job_data['remaining_time']}s")
-                    if 'current_step' in job_data:
-                        extra_info.append(f"step: {job_data['current_step']}")
-                    
-                    extra_str = f", {', '.join(extra_info)}" if extra_info else ""
-                    
+                    status_info = job_data.get('task', {}).get('status', 'unknown')
                     logging.info(f"Migration job {job_id} in progress: {elapsed:.0f}s elapsed, "
-                               f"status: '{status_info}', progress: '{progress_msg}'{extra_str}")
+                               f"status: '{status_info}'")
                     last_progress_log = elapsed
                     
                 time.sleep(5)  # Wait 5 seconds before next check
@@ -493,19 +618,22 @@ class VMBalancer:
                  cpu_overload_threshold: float = 7.0, memory_overload_threshold: float = 70.0,
                  cpu_target_threshold: float = 6.0, memory_target_threshold: float = 80.0,
                  excluded_source_nodes: Optional[List[str]] = None, excluded_target_nodes: Optional[List[str]] = None,
-                 max_migrations_per_cycle: int = 1, migration_timeout: int = 1800):
+                 max_migrations_per_cycle: int = 1, migration_timeout: int = 1800,
+                 telegram_notifier: Optional[TelegramNotifier] = None):
         self.api = api
         self.cpu_overload_threshold = cpu_overload_threshold  # CPU allocation ratio for overloaded nodes
         self.memory_overload_threshold = memory_overload_threshold  # Memory percentage for overloaded nodes
         self.cpu_target_threshold = cpu_target_threshold  # CPU allocation ratio for target nodes
         self.memory_target_threshold = memory_target_threshold  # Memory percentage for target nodes
         self.migration_history = {}  # Track recent migrations
+        self.migration_blacklist = {}  # Track failed/timeout migrations to prevent retries
         self.dry_run = dry_run
         self.cluster_ids = cluster_ids  # List of cluster IDs to process (None = all clusters)
         self.excluded_source_nodes = set(excluded_source_nodes or [])  # Nodes to exclude as migration sources
         self.excluded_target_nodes = set(excluded_target_nodes or [])  # Nodes to exclude as migration targets
         self.max_migrations_per_cycle = max_migrations_per_cycle  # Maximum number of migrations per cycle
         self.migration_timeout = migration_timeout  # Timeout for VM migration in seconds
+        self.telegram_notifier = telegram_notifier or TelegramNotifier()  # Telegram notifications
         
     def filter_clusters(self, clusters: List[ClusterInfo]) -> List[ClusterInfo]:
         """Filter clusters based on cluster_ids if specified"""
@@ -532,13 +660,15 @@ class VMBalancer:
                 logging.debug(f"Node {node.name} excluded from migration sources")
                 continue
                 
-            if (not node.is_maintenance and 
-                (node.cpu_allocation_ratio > self.cpu_overload_threshold or 
-                 node.memory_usage_percent > self.memory_overload_threshold)):
+            # Use more sophisticated CPU load calculation
+            cpu_overloaded = node.cpu_load_score > self.cpu_overload_threshold
+            memory_overloaded = node.memory_usage_percent > self.memory_overload_threshold
+                
+            if not node.is_maintenance and (cpu_overloaded or memory_overloaded):
                 overloaded.append(node)
         
-        # Sort by load (most loaded first)
-        overloaded.sort(key=lambda n: max(n.cpu_allocation_ratio, n.memory_usage_percent), reverse=True)
+        # Sort by combined load score (most loaded first) 
+        overloaded.sort(key=lambda n: n.cpu_load_score + (n.memory_usage_percent / 100), reverse=True)
         return overloaded
     
     def find_underloaded_nodes(self, nodes: List[NodeInfo]) -> List[NodeInfo]:
@@ -557,8 +687,8 @@ class VMBalancer:
                          f"CPU_ratio={node.cpu_allocation_ratio:.1f}:1 ({node.cpu_used}/{node.cpu_total}), "
                          f"Memory={node.memory_usage_percent:.1f}%{qemu_info}")
             
-            # Check if node can accept VMs and has capacity
-            cpu_has_capacity = node.cpu_allocation_ratio < self.cpu_target_threshold
+            # Check if node can accept VMs and has capacity (use improved CPU scoring)
+            cpu_has_capacity = node.cpu_load_score < self.cpu_target_threshold
             memory_has_capacity = node.memory_usage_percent < self.memory_target_threshold
             
             if (node.can_accept_vms and cpu_has_capacity and memory_has_capacity):
@@ -574,7 +704,7 @@ class VMBalancer:
                     if node.vm_limit > 0 and node.vm_count >= node.vm_limit:
                         reasons.append(f"VM limit reached ({node.vm_count}/{node.vm_limit})")
                 if not cpu_has_capacity:
-                    reasons.append(f"CPU allocation too high ({node.cpu_allocation_ratio:.1f}:1)")
+                    reasons.append(f"CPU load too high (score: {node.cpu_load_score:.1f})")
                 if not memory_has_capacity:
                     reasons.append(f"Memory too high ({node.memory_usage_percent:.1f}%)")
                 
@@ -583,8 +713,8 @@ class VMBalancer:
                 
                 logging.debug(f"Node {node.name} rejected: {', '.join(reasons)}")
         
-        # Sort by available capacity (lowest allocation ratio first)
-        underloaded.sort(key=lambda n: (n.cpu_allocation_ratio, n.memory_usage_percent))
+        # Sort by available capacity (lowest load score first, then memory)
+        underloaded.sort(key=lambda n: (n.cpu_load_score, n.memory_usage_percent))
         return underloaded
     
     def select_vm_for_migration(self, vms: List[VMInfo], source_node: NodeInfo) -> Optional[VMInfo]:
@@ -618,10 +748,21 @@ class VMBalancer:
                         f"but all were recently migrated (within 1 hour)")
             return None
         
-        # Sort by resource usage (migrate smaller VMs first for easier balancing)
-        recent_candidates.sort(key=lambda vm: vm.cpu_cores + (vm.memory_mb / 1024))
+        # Exclude VMs that are in blacklist (failed migrations within last 24 hours)
+        blacklist_cutoff = datetime.now() - timedelta(hours=24)
+        final_candidates = [vm for vm in recent_candidates 
+                          if self.migration_blacklist.get(vm.id, datetime.min) < blacklist_cutoff]
         
-        selected_vm = recent_candidates[0]
+        if not final_candidates:
+            blacklisted_count = len(recent_candidates) - len(final_candidates)
+            logging.info(f"Node {source_node.name}: {len(recent_candidates)} VMs can migrate, "
+                        f"but {blacklisted_count} are blacklisted due to recent failures")
+            return None
+        
+        # Sort by resource usage (migrate smaller VMs first for easier balancing)
+        final_candidates.sort(key=lambda vm: vm.cpu_cores + (vm.memory_mb / 1024))
+        
+        selected_vm = final_candidates[0]
         logging.debug(f"Node {source_node.name}: Selected VM {selected_vm.name} for migration "
                      f"(CPU: {selected_vm.cpu_cores}, Memory: {selected_vm.memory_mb}MB)")
         
@@ -687,13 +828,14 @@ class VMBalancer:
         self._current_cluster_nodes = cluster.nodes
         
         # Log threshold settings
-        logging.debug(f"Thresholds - CPU overload: {self.cpu_overload_threshold}:1, "
+        logging.debug(f"Thresholds - CPU overload: {self.cpu_overload_threshold} (load score), "
                      f"Memory overload: {self.memory_overload_threshold}%, "
-                     f"CPU target: {self.cpu_target_threshold}:1, "
+                     f"CPU target: {self.cpu_target_threshold} (load score), "
                      f"Memory target: {self.memory_target_threshold}%")
         
         # Log migration settings
-        logging.debug(f"Migration settings - Max migrations per cycle: {self.max_migrations_per_cycle}")
+        logging.debug(f"Migration settings - Max migrations per cycle: {self.max_migrations_per_cycle}, "
+                     f"Blacklist retention: 24 hours")
         
         # Log excluded nodes
         if self.excluded_source_nodes:
@@ -730,6 +872,7 @@ class VMBalancer:
                 
             logging.info(f"Node {source_node.name} is overloaded: "
                         f"CPU allocation {source_node.cpu_allocation_ratio:.1f}:1 ({source_node.cpu_used}/{source_node.cpu_total}), "
+                        f"CPU load score {source_node.cpu_load_score:.1f}, "
                         f"Memory {source_node.memory_usage_percent:.1f}%")
             
             # Select VM to migrate
@@ -748,20 +891,30 @@ class VMBalancer:
             logging.info(f"{'[DRY RUN] Would migrate' if self.dry_run else 'Migrating'} VM {vm_to_migrate.name} "
                         f"from {source_node.name} to {target_node.name}")
             
+            # Notify migration start
+            self.telegram_notifier.notify_migration_start(vm_to_migrate.name, source_node.name, target_node.name)
+            
             if self.dry_run:
                 # In dry run mode, just log what would be done
                 logging.info(f"[DRY RUN] VM {vm_to_migrate.name} migration simulated successfully")
+                self.telegram_notifier.notify_migration_success(vm_to_migrate.name, source_node.name, target_node.name, 0)
                 migrations_performed += 1
                 
                 # Update node info for simulation
                 source_node.vm_count -= 1
                 target_node.vm_count += 1
             else:
-                # Real migration
+                # Real migration - track start time for duration calculation
+                migration_start_time = time.time()
+                
                 if self.api.migrate_vm(vm_to_migrate.id, target_node.id, self.migration_timeout):
+                    migration_duration = time.time() - migration_start_time
                     logging.info(f"Successfully migrated VM {vm_to_migrate.name}")
                     self.migration_history[vm_to_migrate.id] = datetime.now()
                     migrations_performed += 1
+                    
+                    # Notify successful migration
+                    self.telegram_notifier.notify_migration_success(vm_to_migrate.name, source_node.name, target_node.name, migration_duration)
                     
                     # Update node info after migration
                     source_node.vm_count -= 1
@@ -772,6 +925,12 @@ class VMBalancer:
                         underloaded_nodes.remove(target_node)
                 else:
                     logging.error(f"Failed to migrate VM {vm_to_migrate.name}")
+                    # Add to blacklist to prevent retry attempts for 24 hours
+                    self.migration_blacklist[vm_to_migrate.id] = datetime.now()
+                    logging.debug(f"VM {vm_to_migrate.name} added to migration blacklist")
+                    
+                    # Notify failed migration
+                    self.telegram_notifier.notify_migration_failure(vm_to_migrate.name, source_node.name, target_node.name, "Migration failed")
         
         # Clean up cluster nodes reference
         self._current_cluster_nodes = None
@@ -800,6 +959,9 @@ class VMBalancer:
             logging.warning("No clusters to process after filtering")
             return
         
+        # Notify balance cycle start
+        self.telegram_notifier.notify_balance_cycle_start(len(clusters), self.dry_run)
+        
         total_migrations = 0
         for cluster in clusters:
             try:
@@ -809,6 +971,9 @@ class VMBalancer:
                 logging.error(f"Error balancing cluster {cluster.name}: {e}")
         
         logging.info(f"{mode_text}Balance cycle completed. Total migrations: {total_migrations}")
+        
+        # Notify balance cycle completion
+        self.telegram_notifier.notify_balance_cycle_complete(total_migrations, self.dry_run)
 
 def setup_logging(log_level: str = 'INFO') -> None:
     """Setup logging configuration"""
@@ -886,6 +1051,15 @@ def main():
     parser.add_argument('--verify-ssl', 
                        action='store_true',
                        help='Verify SSL certificates')
+    parser.add_argument('--notifications', 
+                       action='store_true',
+                       help='Enable Telegram notifications for migrations')
+    parser.add_argument('--telegram-bot-token',
+                       default=get_env_value('TELEGRAM_BOT_TOKEN'),
+                       help='Telegram bot token for notifications')
+    parser.add_argument('--telegram-chat-id',
+                       default=get_env_value('TELEGRAM_CHAT_ID'),
+                       help='Telegram chat ID for notifications')
     
     args = parser.parse_args()
     
@@ -923,6 +1097,15 @@ def main():
         logging.error("Failed to authenticate with VMManager")
         sys.exit(1)
     
+    # Initialize Telegram notifier if notifications are enabled
+    telegram_notifier = None
+    if args.notifications:
+        telegram_notifier = TelegramNotifier(
+            bot_token=args.telegram_bot_token,
+            chat_id=args.telegram_chat_id,
+            enabled=True
+        )
+    
     # Initialize balancer
     balancer = VMBalancer(api, dry_run=args.dry_run, cluster_ids=cluster_ids,
                          cpu_overload_threshold=args.cpu_overload_threshold,
@@ -932,7 +1115,8 @@ def main():
                          excluded_source_nodes=args.exclude_source_nodes,
                          excluded_target_nodes=args.exclude_target_nodes,
                          max_migrations_per_cycle=args.max_migrations_per_cycle,
-                         migration_timeout=args.migration_timeout)
+                         migration_timeout=args.migration_timeout,
+                         telegram_notifier=telegram_notifier)
     
     # Run balancer
     if args.once:
