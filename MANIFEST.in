@@ -1,0 +1,14 @@
+include README.md
+include README_RU.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+include requirements.txt
+include config.env.example
+include pyproject.toml
+recursive-include src/vm_balancer *.py
+global-exclude *.pyc
+global-exclude __pycache__/*
+global-exclude .DS_Store
+global-exclude *.log

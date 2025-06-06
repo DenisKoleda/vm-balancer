@@ -25,6 +25,28 @@ An intelligent auto-balancer for VMManager 6 that automatically redistributes vi
 
 ## 🔧 Installation
 
+### 📦 From Package (Recommended)
+
+1. **Install from PyPI** (when published):
+   ```bash
+   pip install vm-balancer
+   ```
+
+2. **Or install from source**:
+   ```bash
+   git clone https://github.com/your-username/vm_balancer.git
+   cd vm_balancer
+   pip install .
+   ```
+
+3. **Configure settings**:
+   ```bash
+   cp config.env.example .env
+   # Edit .env with your VMManager details
+   ```
+
+### 🛠️ Development Installation
+
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/your-username/vm_balancer.git
@@ -39,9 +61,9 @@ An intelligent auto-balancer for VMManager 6 that automatically redistributes vi
    .venv\Scripts\activate     # Windows
    ```
 
-3. **Install dependencies**:
+3. **Install in development mode**:
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
 
 4. **Configure settings**:
@@ -79,6 +101,77 @@ EXCLUDE_TARGET_NODES=node3,node4        # Exclude as targets
 
 # Logging
 LOG_LEVEL=INFO                          # DEBUG, INFO, WARNING, ERROR
+
+# SSH Monitoring (Optional)
+SSH_ENABLED=false                       # Enable SSH load monitoring
+SSH_USERNAME=root                       # SSH username
+SSH_PRIVATE_KEY_PATH=/path/to/key       # SSH private key path
+SSH_PASSWORD=                           # SSH password (if no key)
+SSH_TIMEOUT=10                          # SSH timeout (seconds)
+SSH_HOSTS_MAPPING={"node1": "192.168.1.10"}  # Node name to IP mapping
+
+# Telegram Notifications (Optional)
+TELEGRAM_BOT_TOKEN=                     # Bot token
+TELEGRAM_CHAT_ID=                       # Chat ID
+```
+
+### SSH Load Monitoring
+
+The balancer can optionally use SSH to get real-time load average from cluster nodes instead of relying only on VMManager API data. This provides more accurate CPU load information.
+
+**Benefits:**
+- Real-time load average (1min, 5min, 15min) from `/proc/loadavg`
+- More accurate than vCPU allocation ratios
+- Better migration decisions based on actual system load
+
+**Setup:**
+1. Enable SSH monitoring in configuration
+2. Configure SSH credentials (key or password authentication)
+3. API automatically provides IP, port, and username
+4. Optionally override with custom hostname mapping
+
+**SSH Authentication Options:**
+
+*Key-based authentication (recommended):*
+```bash
+SSH_ENABLED=true
+SSH_PRIVATE_KEY_PATH=/root/.ssh/id_rsa
+SSH_USERNAME=  # Optional fallback, API provides username
+```
+
+*Password-based authentication:*
+```bash
+SSH_ENABLED=true
+SSH_PASSWORD=your_ssh_password
+SSH_USERNAME=  # Optional fallback, API provides username
+```
+
+**Example SSH configuration:**
+```bash
+# Enable SSH monitoring
+SSH_ENABLED=true
+SSH_TIMEOUT=10
+
+# Authentication (choose one method)
+SSH_PRIVATE_KEY_PATH=/root/.ssh/id_rsa  # Key-based
+# SSH_PASSWORD=mysecretpassword         # Password-based
+
+# Optional: Override API-provided hostnames
+SSH_HOSTS_MAPPING='{
+  "node-1": "192.168.1.10",
+  "node-2": "192.168.1.11", 
+  "node-3": "node3.example.com"
+}'
+```
+
+**SSH options:**
+```bash
+--ssh-enabled                           # Enable SSH monitoring
+--ssh-username root                     # SSH username
+--ssh-private-key /path/to/key          # SSH private key
+--ssh-password mypassword               # SSH password
+--ssh-timeout 10                        # Connection timeout
+--ssh-hosts-mapping '{"node1":"ip"}'    # JSON hostname mapping
 ```
 
 ### Command Line Options
@@ -113,55 +206,60 @@ LOG_LEVEL=INFO                          # DEBUG, INFO, WARNING, ERROR
 
 ## 🎮 Usage
 
-### Interactive Mode (Recommended)
+### Command Line Interface
 
-Launch the rich console interface:
-
-```bash
-python interactive.py
-```
-
-**Interactive features:**
-- 🌈 Beautiful console interface with real-time updates
-- 🔐 Secure credential management and connection testing
-- 📊 Live cluster and node status monitoring
-- ⚙️ Dynamic configuration adjustment
-- 🚀 One-click balancing execution
-- 📝 Real-time log streaming
-- 🧪 Easy dry-run mode toggle
-
-### Command Line Mode
+After installation, you can use the `vm-balancer` command:
 
 #### First Run (Recommended)
 ```bash
 # Test without making changes
-python vm_balancer.py --dry-run --once --log-level DEBUG
+vm-balancer --dry-run --once --log-level DEBUG
 ```
 
 #### Single Balancing Run
 ```bash
-python vm_balancer.py --once
+vm-balancer --once
 ```
 
 #### Continuous Monitoring
 ```bash
-python vm_balancer.py --interval 300
+vm-balancer --interval 300
 ```
 
 #### Cluster-Specific Balancing
 ```bash
-python vm_balancer.py --cluster-ids 1 3 5 --dry-run
+vm-balancer --cluster-ids 1 3 5 --dry-run
 ```
+
+### Python Module Usage
+
+You can also use the package as a Python module:
+
+```bash
+# Using the module directly
+python -m vm_balancer --help
+
+# Or import in your code
+python -c "from vm_balancer import VMBalancer; print('Available')"
+```
+
+### Configuration File
+
+The balancer looks for configuration in the following order:
+1. Command line arguments
+2. Environment variables
+3. `.env` file in current directory
+4. Default values
 
 #### Advanced Usage
 ```bash
 # Fast balancing with multiple migrations
-python vm_balancer.py --max-migrations-per-cycle 3 --once
+vm-balancer --max-migrations-per-cycle 3 --once
 
 # Conservative balancing with exclusions
-python vm_balancer.py --exclude-source-nodes problematic-node \
-                      --exclude-target-nodes maintenance-node \
-                      --max-migrations-per-cycle 1
+vm-balancer --exclude-source-nodes problematic-node \
+            --exclude-target-nodes maintenance-node \
+            --max-migrations-per-cycle 1
 ```
 
 ## 🧠 How It Works
@@ -279,6 +377,46 @@ tar -xzf vm-balancer-X.X.X-portable.tar.gz
 cd vm-balancer-portable && ./run.sh
 
 # Windows: Download vm-balancer-X.X.X-windows.zip and run install.bat
+```
+
+## 🔗 Using the VM Balancer as a library allows you to integrate its functionality into your own applications or scripts
+
+### Simple Example
+```python
+from vm_balancer import VMBalancer
+import asyncio
+
+async def main():
+    # Create a balancer with configuration
+    balancer = VMBalancer(config_path='.env', dry_run=True)
+
+    # Perform a single balancing run
+    await balancer.run_once()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Component Usage
+```python
+from vm_balancer import VMManagerAPI, TelegramNotifier
+
+# API client
+api = VMManagerAPI(
+    host="https://vmmanager.example.com",
+    username="admin", 
+    password="password"
+)
+
+# Notifications
+notifier = TelegramNotifier(
+    bot_token="your_bot_token",
+    chat_id="your_chat_id",
+    enabled=True
+)
+
+# Get clusters
+clusters = await api.get_clusters()
 ```
 
 ## 🔗 Related Projects

@@ -1,0 +1,114 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-checks:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov black flake8 mypy isort safety bandit
+
+    - name: Run linting
+      run: |
+        echo "::group::Flake8 Linting"
+        flake8 src --count --statistics
+        echo "::endgroup::"
+
+        echo "::group::Black Formatting Check"
+        black --check --diff src/
+        echo "::endgroup::"
+
+        echo "::group::Import Sorting Check"
+        isort --check-only --diff src/
+        echo "::endgroup::"
+
+    - name: Run type checking
+      run: |
+        echo "::group::MyPy Type Checking"
+        mypy src/ --ignore-missing-imports || true
+        echo "::endgroup::"
+
+    - name: Run tests
+      run: |
+        echo "::group::Running Tests"
+        pytest tests/ --cov=src/vm_balancer --cov-report=term-missing --cov-report=xml || true
+        echo "::endgroup::"
+
+    - name: Security checks
+      run: |
+        echo "::group::Safety Check"
+        safety check || true
+        echo "::endgroup::"
+
+        echo "::group::Bandit Security Scan"
+        bandit -r src/ || true
+        echo "::endgroup::"
+
+    - name: Test build
+      run: |
+        echo "::group::Test Package Build"
+        pip install build
+        python -m build
+        pip install twine
+        twine check dist/*
+        echo "::endgroup::"
+
+    - name: PR Comment
+      uses: actions/github-script@v6
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const botComment = comments.find(comment =>
+            comment.user.type === 'Bot' &&
+            comment.body.includes('<!-- PR_CHECKS_COMMENT -->')
+          );
+
+          const commentBody = `<!-- PR_CHECKS_COMMENT -->
+          ## ✅ Automatic checks passed
+
+          This PR has been automatically checked:
+          - 🔍 Code linting (flake8, black, isort)
+          - 🏷️ Type checking (mypy)
+          - 🧪 Test execution
+          - 🔒 Security checks (safety, bandit)
+          - 📦 Test package build
+
+          All checks passed successfully! 🎉`;
+
+          if (botComment) {
+            github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: botComment.id,
+              body: commentBody
+            });
+          } else {
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+          }

@@ -7,7 +7,7 @@ Thank you for your interest in contributing to the VMManager 6 Auto-Balancer! We
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/your-username/vm_balancer.git
+   git clone https://github.com/DenisKoleda/vm_balancer.git
    cd vm_balancer
    ```
 3. **Set up development environment**:

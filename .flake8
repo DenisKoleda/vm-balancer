@@ -1,0 +1,25 @@
+[flake8]
+max-line-length = 88
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    .env,
+    dist,
+    build,
+    *.egg-info,
+    .pytest_cache,
+    .coverage
+ignore =
+    # E203: whitespace before ':'
+    E203,
+    # W503: line break before binary operator
+    W503,
+    # E501: line too long (handled by black)
+    E501
+per-file-ignores =
+    __init__.py:F401
+    test_*.py:S101
+select = E,W,F,C,N
+count = True
+statistics = True

@@ -44,9 +44,6 @@ We take security seriously. If you discover a security vulnerability, please fol
 
 ### Reporting Methods
 
-#### Email
-Send details to: `security@your-domain.com` (replace with actual contact)
-
 #### GitHub Security Advisories
 Use GitHub's private vulnerability reporting feature:
 1. Go to the repository's Security tab
