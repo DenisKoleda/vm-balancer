@@ -5,7 +5,7 @@ This package provides automated load balancing for virtual machines across clust
 in VMManager 6 environment.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __author__ = "VMBalancer Team"
 __email__ = "support@vmbalancer.com"
 

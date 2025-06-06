@@ -21,7 +21,7 @@ def read_requirements():
 
 setup(
     name="vm-balancer",
-    version="2.0.0",
+    version="2.0.1",
     author="Denis Koleda",
     author_email="deniskoleda6@gmail.com",
     description="Intelligent auto-balancer for VMManager 6 virtual machines",
