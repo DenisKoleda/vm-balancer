@@ -15,6 +15,18 @@ from ..models.vm import VMInfo
 from ..monitoring.ssh import SSHMonitor
 from ..notifications.telegram import TelegramNotifier
 from ..utils.i18n import t
+from .constants import (
+    DEFAULT_BALANCE_INTERVAL,
+    DEFAULT_CPU_OVERLOAD_THRESHOLD,
+    DEFAULT_CPU_TARGET_THRESHOLD,
+    DEFAULT_MEMORY_OVERLOAD_THRESHOLD,
+    DEFAULT_MEMORY_TARGET_THRESHOLD,
+    DEFAULT_MIGRATION_TIMEOUT,
+    DEFAULT_MAX_MIGRATIONS_PER_CYCLE,
+)
+from .migration_strategy import MigrationStrategy
+from .node_analyzer import NodeAnalyzer
+from .resource_estimator import ResourceEstimator
 
 
 class VMBalancer:
@@ -39,14 +51,7 @@ class VMBalancer:
         self.verbose = verbose
 
         # Configure logging
-        log_level = (
-            logging.DEBUG
-            if verbose
-            else getattr(logging, self.config.log_level.upper())
-        )
-        logging.basicConfig(
-            level=log_level, format="%(asctime)s - %(levelname)s - %(message)s"
-        )
+        self._setup_logging()
 
         # Initialize API client
         self.api = VMManagerAPI(
@@ -57,6 +62,50 @@ class VMBalancer:
         )
 
         # Set configuration parameters
+        self._load_config_parameters()
+
+        # Initialize optional components
+        self.telegram_notifier = self._setup_telegram_notifier()
+        self.ssh_monitor = self._setup_ssh_monitor()
+
+        # Internal state
+        self.migration_history = {}  # Track recent migrations
+        self.migration_blacklist = {}  # Track failed/timeout migrations to prevent retries
+
+        # Initialize strategy components
+        self.resource_estimator = ResourceEstimator(
+            cpu_overload_threshold=self.cpu_overload_threshold,
+            memory_overload_threshold=self.memory_overload_threshold,
+        )
+
+        self.node_analyzer = NodeAnalyzer(
+            cpu_overload_threshold=self.cpu_overload_threshold,
+            memory_overload_threshold=self.memory_overload_threshold,
+            cpu_target_threshold=self.cpu_target_threshold,
+            memory_target_threshold=self.memory_target_threshold,
+            excluded_source_nodes=self.excluded_source_nodes,
+            excluded_target_nodes=self.excluded_target_nodes,
+        )
+
+        self.migration_strategy = MigrationStrategy(
+            resource_estimator=self.resource_estimator,
+            migration_history=self.migration_history,
+            migration_blacklist=self.migration_blacklist,
+        )
+
+    def _setup_logging(self) -> None:
+        """Setup logging configuration"""
+        log_level = (
+            logging.DEBUG
+            if self.verbose
+            else getattr(logging, self.config.log_level.upper())
+        )
+        logging.basicConfig(
+            level=log_level, format="%(asctime)s - %(levelname)s - %(message)s"
+        )
+
+    def _load_config_parameters(self) -> None:
+        """Load configuration parameters"""
         self.balance_interval = self.config.balance_interval
         self.cluster_ids = self.config.cluster_ids
         self.cpu_overload_threshold = self.config.cpu_overload_threshold
@@ -72,29 +121,26 @@ class VMBalancer:
         self.ssh_enabled = self.config.ssh_enabled
         self.ssh_hosts_mapping = self.config.ssh_hosts_mapping
 
-        # Initialize optional components
-        self.telegram_notifier = None
+    def _setup_telegram_notifier(self) -> Optional[TelegramNotifier]:
+        """Setup Telegram notifier if configured"""
         if self.config.telegram_bot_token and self.config.telegram_chat_id:
-            self.telegram_notifier = TelegramNotifier(
+            return TelegramNotifier(
                 bot_token=self.config.telegram_bot_token,
                 chat_id=self.config.telegram_chat_id,
             )
+        return None
 
-        self.ssh_monitor = None
+    def _setup_ssh_monitor(self) -> Optional[SSHMonitor]:
+        """Setup SSH monitor if configured"""
         if self.config.ssh_enabled:
-            self.ssh_monitor = SSHMonitor(
+            return SSHMonitor(
                 username=self.config.ssh_username,
                 private_key_path=self.config.ssh_private_key_path,
                 password=self.config.ssh_password,
                 timeout=self.config.ssh_timeout,
                 hosts_mapping=self.config.ssh_hosts_mapping,
             )
-
-        # Internal state
-        self.migration_history = {}  # Track recent migrations
-        self.migration_blacklist = (
-            {}
-        )  # Track failed/timeout migrations to prevent retries
+        return None
 
     def filter_clusters(self, clusters: List[ClusterInfo]) -> List[ClusterInfo]:
         """Filter clusters based on cluster_ids if specified"""
