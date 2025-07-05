@@ -64,19 +64,30 @@ class EnvConfig:
         self.vmmanager_username = get_env_value("VMMANAGER_USERNAME", "admin")
         self.vmmanager_password = get_env_value("VMMANAGER_PASSWORD", "")
 
+        # Import constants
+        from ..core.constants import (
+            DEFAULT_BALANCE_INTERVAL,
+            DEFAULT_CPU_OVERLOAD_THRESHOLD,
+            DEFAULT_CPU_TARGET_THRESHOLD,
+            DEFAULT_MEMORY_OVERLOAD_THRESHOLD,
+            DEFAULT_MEMORY_TARGET_THRESHOLD,
+            DEFAULT_MIGRATION_TIMEOUT,
+            DEFAULT_MAX_MIGRATIONS_PER_CYCLE,
+        )
+
         # Balance settings
-        self.balance_interval = get_env_int("BALANCE_INTERVAL", 600)
+        self.balance_interval = get_env_int("BALANCE_INTERVAL", DEFAULT_BALANCE_INTERVAL)
         self.cluster_ids = get_env_list("CLUSTER_IDS")
-        self.max_migrations_per_cycle = get_env_int("MAX_MIGRATIONS_PER_CYCLE", 1)
-        self.migration_timeout = get_env_int("MIGRATION_TIMEOUT", 1800)
+        self.max_migrations_per_cycle = get_env_int("MAX_MIGRATIONS_PER_CYCLE", DEFAULT_MAX_MIGRATIONS_PER_CYCLE)
+        self.migration_timeout = get_env_int("MIGRATION_TIMEOUT", DEFAULT_MIGRATION_TIMEOUT)
 
         # Thresholds
-        self.cpu_overload_threshold = get_env_float("CPU_OVERLOAD_THRESHOLD", 7.0)
+        self.cpu_overload_threshold = get_env_float("CPU_OVERLOAD_THRESHOLD", DEFAULT_CPU_OVERLOAD_THRESHOLD)
         self.memory_overload_threshold = get_env_float(
-            "MEMORY_OVERLOAD_THRESHOLD", 70.0
+            "MEMORY_OVERLOAD_THRESHOLD", DEFAULT_MEMORY_OVERLOAD_THRESHOLD
         )
-        self.cpu_target_threshold = get_env_float("CPU_TARGET_THRESHOLD", 6.0)
-        self.memory_target_threshold = get_env_float("MEMORY_TARGET_THRESHOLD", 80.0)
+        self.cpu_target_threshold = get_env_float("CPU_TARGET_THRESHOLD", DEFAULT_CPU_TARGET_THRESHOLD)
+        self.memory_target_threshold = get_env_float("MEMORY_TARGET_THRESHOLD", DEFAULT_MEMORY_TARGET_THRESHOLD)
 
         # Node exclusions
         self.exclude_source_nodes = get_env_list("EXCLUDE_SOURCE_NODES")
@@ -93,7 +104,8 @@ class EnvConfig:
         self.ssh_username = get_env_value("SSH_USERNAME", "")
         self.ssh_private_key_path = get_env_value("SSH_PRIVATE_KEY_PATH", "")
         self.ssh_password = get_env_value("SSH_PASSWORD", "")
-        self.ssh_timeout = get_env_int("SSH_TIMEOUT", 10)
+        from ..core.constants import DEFAULT_SSH_TIMEOUT
+        self.ssh_timeout = get_env_int("SSH_TIMEOUT", DEFAULT_SSH_TIMEOUT)
 
         # SSH hosts mapping (JSON format)
         ssh_mapping_str = get_env_value("SSH_HOSTS_MAPPING", "{}")

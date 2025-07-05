@@ -54,20 +54,24 @@ class NodeInfo:
             ssh_load_score = self.load_average_1m / self.cpu_total
 
             # Add VM density factor
-            vm_density_factor = min(self.vm_count / max(self.cpu_total, 1), 2.0)
+            from ..core.constants import VM_DENSITY_FACTOR_CAP, SSH_VM_DENSITY_FACTOR_WEIGHT
+            
+            vm_density_factor = min(self.vm_count / max(self.cpu_total, 1), VM_DENSITY_FACTOR_CAP)
 
-            return ssh_load_score + (vm_density_factor * 0.3)
+            return ssh_load_score + (vm_density_factor * SSH_VM_DENSITY_FACTOR_WEIGHT)
 
         # Fallback to allocation ratio
         allocation_ratio = self.cpu_allocation_ratio
 
         # VM density factor (more VMs = higher complexity/overhead)
+        from ..core.constants import VM_DENSITY_FACTOR_CAP, VM_DENSITY_FACTOR_WEIGHT
+        
         vm_density_factor = min(
-            self.vm_count / max(self.cpu_total, 1), 2.0
-        )  # Cap at 2.0x factor
+            self.vm_count / max(self.cpu_total, 1), VM_DENSITY_FACTOR_CAP
+        )
 
         # Combined score: allocation ratio + density penalty
-        load_score = allocation_ratio + (vm_density_factor * 0.5)
+        load_score = allocation_ratio + (vm_density_factor * VM_DENSITY_FACTOR_WEIGHT)
 
         return load_score
 
@@ -92,8 +96,10 @@ class NodeInfo:
         """Check if node is overloaded based on thresholds"""
         # Note: This will be updated by the balancer with actual thresholds
         # For now using default values, but the balancer will override this check
-        cpu_overloaded = self.cpu_allocation_ratio > 7.0  # More than 7:1 vCPU ratio
-        memory_overloaded = self.memory_usage_percent > 70
+        from ..core.constants import DEFAULT_CPU_OVERLOAD_THRESHOLD, DEFAULT_MEMORY_OVERLOAD_THRESHOLD
+        
+        cpu_overloaded = self.cpu_allocation_ratio > DEFAULT_CPU_OVERLOAD_THRESHOLD
+        memory_overloaded = self.memory_usage_percent > DEFAULT_MEMORY_OVERLOAD_THRESHOLD
         return cpu_overloaded or memory_overloaded
 
     @property
